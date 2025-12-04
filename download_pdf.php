@@ -1,16 +1,15 @@
 <?php
-// Prevent any stray spaces/errors from corrupting the PDF
 ob_start();
 
 define('FPDF_FONTPATH', 'includes/font/');
 require('includes/fpdf.php');
 include 'includes/db_connect.php';
 
-// INPUTS
 $dept = $_GET['dept'] ?? 'CSE';
 $sec = $_GET['sec'] ?? 'A';
+$sem = $_GET['sem'] ?? 'III-I';
 
-// HELPER: Acronym Generator
+// HELPER: Acronym
 function generateAcronym($string) {
     $string = trim(preg_replace('/\s+/', ' ', $string));
     if(strlen($string) <= 4) return strtoupper($string);
@@ -23,32 +22,104 @@ function generateAcronym($string) {
 }
 
 class PDF extends FPDF {
-    // PAGE HEADER
+    var $widths;
+    var $aligns;
+
+    // --- TEXT WRAPPING HELPERS ---
+    function SetWidths($w) { $this->widths = $w; }
+    function SetAligns($a) { $this->aligns = $a; }
+
+    function Row($data, $fill=false) {
+        $nb = 0;
+        for($i=0; $i<count($data); $i++)
+            $nb = max($nb, $this->NbLines($this->widths[$i], $data[$i]));
+        $h = 5 * $nb;
+        $this->CheckPageBreak($h);
+        for($i=0; $i<count($data); $i++) {
+            $w = $this->widths[$i];
+            $a = isset($this->aligns[$i]) ? $this->aligns[$i] : 'L';
+            $x = $this->GetX();
+            $y = $this->GetY();
+            $this->Rect($x, $y, $w, $h);
+            $this->MultiCell($w, 5, $data[$i], 0, $a, $fill);
+            $this->SetXY($x + $w, $y);
+        }
+        $this->Ln($h);
+    }
+
+    function CheckPageBreak($h) {
+        if($this->GetY() + $h > $this->PageBreakTrigger)
+            $this->AddPage($this->CurOrientation);
+    }
+
+    function NbLines($w, $txt) {
+        $cw = &$this->CurrentFont['cw'];
+        if($w == 0) $w = $this->w - $this->rMargin - $this->x;
+        $wmax = ($w - 2 * $this->cMargin) * 1000 / $this->FontSize;
+        $s = str_replace("\r", '', $txt);
+        $nb = strlen($s);
+        if($nb > 0 && $s[$nb-1] == "\n") $nb--;
+        $sep = -1;
+        $i = 0;
+        $j = 0;
+        $l = 0;
+        $nl = 1;
+        while($i < $nb) {
+            $c = $s[$i];
+            if($c == "\n") { $i++; $sep = -1; $j = $i; $l = 0; $nl++; continue; }
+            if($c == ' ') $sep = $i;
+            $l += $cw[$c];
+            if($l > $wmax) {
+                if($sep == -1) { if($i == $j) $i++; } else $i = $sep + 1;
+                $sep = -1; $j = $i; $l = 0; $nl++;
+            } else $i++;
+        }
+        return $nl;
+    }
+
+    // --- PURE IMAGE HEADER ---
     function Header() {
-        // 1. Header Image
-        if(file_exists('images/header.jpg')) {
-            $this->Image('images/header.jpg', 10, 5, 277); // Fit to A4 Landscape
-            $this->Ln(35); // Push content down
+        
+        // 1. IMAGE ONLY
+        // We look for 'header.jpg' (or logo.jpeg)
+        $img = '';
+        if(file_exists('images/header.jpg')) $img = 'images/header.jpg';
+        elseif(file_exists('images/logo.jpeg')) $img = 'images/logo.jpeg';
+
+        if($img) {
+            // X=15, Y=5. 
+            // Width=267 (Full Printable Width of A4 Landscape). Height=Auto.
+            $this->Image($img, 15, 5, 267, 0); 
+            
+            // *** IMPORTANT: VERTICAL SPACE ***
+            // This moves the invisible cursor down so the text doesn't overlap the image.
+            // If the image covers the text, INCREASE this number (e.g., 40, 45).
+            // If there is too much white space, DECREASE this number (e.g., 25, 30).
+            $this->Ln(35); 
         } else {
+            // Fallback
             $this->SetFont('Arial', 'B', 20);
-            $this->Cell(0, 10, 'COLLEGE TIMETABLE', 0, 1, 'C');
-            $this->Ln(5);
+            $this->Cell(0, 10, 'HEADER IMAGE MISSING', 0, 1, 'C');
+            $this->Ln(10);
         }
 
-        // 2. Info Row
-        $this->SetFont('Arial', 'B', 16);
-        $this->Cell(0, 10, "Department: " . $_GET['dept'] . "  -  Section: " . $_GET['sec'], 0, 1, 'C');
-        $this->Ln(5);
-
-        // 3. Table Header
-        $this->SetFont('Arial', 'B', 10);
-        $this->SetFillColor(50, 50, 50); // Dark Grey
-        $this->SetTextColor(255); // White text
+        // 2. CONTEXT LINE (Dept & Section)
+        // We keep this because the image might not say "Section A"
+        $this->SetFont('Arial', 'B', 12);
+        $this->SetTextColor(0);
         
-        // Column Widths (Total ~270mm)
-        $w_day = 30;
-        $w_slot = 30;
-        $w_gap = 10;
+        $info = "B.Tech " . $GLOBALS['sem'] . "   |   Department: " . $GLOBALS['dept'] . "   |   Section: " . $GLOBALS['sec'];
+        $this->Cell(0, 8, $info, 0, 1, 'C');
+
+        // 3. TABLE HEADER
+        $this->Ln(2); 
+        $this->SetFont('Arial', 'B', 9); 
+        $this->SetFillColor(50, 50, 50);
+        $this->SetTextColor(255);
+
+        $w_day = 25;
+        $w_gap = 6;
+        $w_slot = 32; 
         
         $this->Cell($w_day, 8, 'Day', 1, 0, 'C', true);
         $this->Cell($w_slot, 8, '09:20-10:10', 1, 0, 'C', true);
@@ -60,103 +131,120 @@ class PDF extends FPDF {
         $this->Cell($w_slot, 8, '01:50-02:40', 1, 0, 'C', true);
         $this->Cell($w_slot, 8, '02:40-03:30', 1, 0, 'C', true);
         $this->Cell($w_slot, 8, '03:30-04:20', 1, 1, 'C', true);
-    }
+    } 
 
-    // PAGE FOOTER
     function Footer() {
-        $this->SetY(-15);
-        $this->SetFont('Arial', 'I', 8);
-        $this->SetTextColor(128);
-        $this->Cell(0, 10, 'Page ' . $this->PageNo(), 0, 0, 'C');
-    }
-}
+        $this->SetY(-10); 
+        $this->SetFont('Arial', 'I', 7); 
+        $this->SetTextColor(100);
+        $this->Cell(0, 10, 'Generated by Timetable System | Page ' . $this->PageNo(), 0, 0, 'C');
+    } 
+} 
 
-// GENERATE PDF
-$pdf = new PDF('L', 'mm', 'A4'); // Landscape
+$pdf = new PDF('L', 'mm', 'A4');
+$pdf->SetMargins(15, 10, 15); 
+$pdf->SetAutoPageBreak(false);
 $pdf->AddPage();
-$pdf->SetFont('Arial', '', 10);
 
+// --- 1. THE GRID ---
 $days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
-$w_day = 30;
-$w_slot = 30;
-$w_gap = 10;
-$h_row = 12; // Standard Row Height
+$w_day = 25;
+$w_gap = 6;
+$w_slot = 32;
+$h_row = 10; 
 
 foreach ($days as $day) {
-    // Row Start
-    $pdf->SetFont('Arial', 'B', 10);
+    $pdf->SetFont('Arial', 'B', 9);
     $pdf->SetTextColor(0);
-    $pdf->SetFillColor(240); // Light Grey for Day
+    $pdf->SetFillColor(240); 
     $pdf->Cell($w_day, $h_row, $day, 1, 0, 'C', true);
     
-    $pdf->SetFont('Arial', '', 10); // Normal font for subjects
+    $pdf->SetFont('Arial', '', 9);
 
     for ($i = 1; $i <= 7; $i++) {
-        // BREAK & LUNCH GAPS
         if ($i == 3 || $i == 5) {
             $pdf->SetFillColor(220);
             $pdf->Cell($w_gap, $h_row, '', 1, 0, 'C', true);
         }
 
-        // FETCH DATA
         $sql = "SELECT s.subject_name, s.course_type 
                 FROM generated_timetable t
                 JOIN subjects s ON t.subject_code = s.subject_code
                 WHERE t.day='$day' AND t.slot_id='$i' 
-                AND s.department='$dept' AND t.section='$sec'";
+                AND s.department='$dept' AND t.section='$sec' AND s.semester='$sem'";
+        
         $res = $conn->query($sql);
-
         $text = "-";
         $fill = false;
 
         if ($res->num_rows > 0) {
             $row = $res->fetch_assoc();
-            $text = generateAcronym($row['subject_name']); // Only show CN, OS, etc.
-            
+            $text = generateAcronym($row['subject_name']); 
             if ($row['course_type'] == 'LAB') {
-                $pdf->SetFillColor(200, 230, 255); // Light Blue for Lab
+                $pdf->SetFillColor(200, 230, 255); 
                 $fill = true;
             }
         } else {
-            $pdf->SetFillColor(255); // White for empty
+            $pdf->SetFillColor(255);
         }
 
-        // DRAW CELL
         $pdf->Cell($w_slot, $h_row, $text, 1, 0, 'C', $fill);
-    }
-    $pdf->Ln(); // End of Row
+    } 
+    $pdf->Ln();
 }
 
-// LEGEND TABLE (Subject + Faculty)
-$pdf->Ln(10);
-$pdf->SetFont('Arial', 'B', 12);
-$pdf->Cell(0, 10, "Subject & Faculty Details", 0, 1, 'L');
-
+// --- 2. LEGEND (Wrapped) ---
+$pdf->Ln(4);
 $pdf->SetFont('Arial', 'B', 10);
-$pdf->SetFillColor(230);
-$pdf->Cell(20, 8, 'Code', 1, 0, 'C', true);
-$pdf->Cell(20, 8, 'Short', 1, 0, 'C', true);
-$pdf->Cell(110, 8, 'Subject Name', 1, 0, 'L', true);
-$pdf->Cell(80, 8, 'Faculty Name', 1, 0, 'L', true);
-$pdf->Cell(20, 8, 'Type', 1, 1, 'C', true);
+$pdf->Cell(0, 6, "Subject & Faculty Details", 0, 1, 'L');
 
-$pdf->SetFont('Arial', '', 10);
+$pdf->SetWidths(array(20, 20, 117, 90, 20));
+$pdf->SetAligns(array('C', 'C', 'L', 'L', 'C'));
+
+// Legend Header
+$pdf->SetFont('Arial', 'B', 8);
+$pdf->SetFillColor(230);
+$pdf->SetTextColor(0);
+$pdf->Cell(20, 6, 'Code', 1, 0, 'C', true);
+$pdf->Cell(20, 6, 'Short', 1, 0, 'C', true);
+$pdf->Cell(117, 6, 'Subject Name', 1, 0, 'L', true);
+$pdf->Cell(90, 6, 'Faculty Name', 1, 0, 'L', true);
+$pdf->Cell(20, 6, 'Type', 1, 1, 'C', true);
+$pdf->Ln();
+
+// Legend Data
+$pdf->SetFont('Arial', '', 8);
 $sql_legend = "SELECT s.subject_code, s.subject_name, s.course_type, f.faculty_name 
                FROM course_allotment ca
                JOIN subjects s ON ca.subject_code = s.subject_code
                JOIN faculty f ON ca.faculty_id = f.faculty_id
-               WHERE s.department = '$dept' AND ca.section = '$sec'
+               WHERE s.department = '$dept' AND ca.section = '$sec' AND s.semester = '$sem'
                ORDER BY s.course_type DESC, s.subject_name";
 
 $res_legend = $conn->query($sql_legend);
 while($row = $res_legend->fetch_assoc()) {
-    $pdf->Cell(20, 7, $row['subject_code'], 1, 0, 'C');
-    $pdf->Cell(20, 7, generateAcronym($row['subject_name']), 1, 0, 'C');
-    $pdf->Cell(110, 7, $row['subject_name'], 1, 0, 'L');
-    $pdf->Cell(80, 7, $row['faculty_name'], 1, 0, 'L');
-    $pdf->Cell(20, 7, $row['course_type'], 1, 1, 'C');
+    $pdf->Row(array(
+        $row['subject_code'], 
+        generateAcronym($row['subject_name']), 
+        $row['subject_name'], 
+        $row['faculty_name'], 
+        $row['course_type']
+    ));
 }
 
+// --- 3. SIGNATURES ---
+if ($pdf->GetY() > 175) {
+    $pdf->AddPage();
+}
+
+$pdf->Ln(15); 
+$pdf->SetFont('Arial', 'B', 10);
+$pdf->SetTextColor(0);
+
+$pdf->Cell(100, 10, 'HEAD OF DEPARTMENT', 0, 0, 'L');
+$pdf->Cell(0, 10, 'PRINCIPAL', 0, 1, 'R');
+
 ob_end_flush();
-$pdf->Output('D', "Timetable_{$dept}_{$sec}.pdf");
+$filename = "Timetable_{$dept}_{$sem}_{$sec}.pdf";
+$pdf->Output('D', $filename);
 ?>
